@@ -4,52 +4,31 @@ import (
 	"log"
 	"os"
 	"bufio"
-	"sync"
 	"fmt"
 	"strings"
 	"regexp"
 	"net/url"
 	"io/ioutil"
 	"net/http"
+	"sync"
 )
+
+// echo -e 'https://golang.org\nhttps://golang.org\nhttp://mail.ru\nhttp://4gophers.ru\nhttps://golang.org\nhttp://golangshow.com\nhttps://golang.org\nhttps://golang.org\nhttps://golang.org' | go run main.go
 
 func main() {
 	var searchReg = regexp.MustCompile(`http(s)?://[a-z0-9-]+(.[a-z0-9-]+)*(:[0-9]+)?(/.*)?`)
 
-	inChan := make(chan string, 100)
+	buf := make(chan struct{}, 5)
+	urlChan := make(chan string)
 	countChan := make(chan int)
 
-	var inWg sync.WaitGroup
-	inWg.Add(1)
-	go processInput(inChan, searchReg, &inWg)
-
-	var processWg sync.WaitGroup
-	for i := 0; i < 5; i++ {
-		processWg.Add(1)
-		go processRead(inChan, countChan, &processWg)
-	}
-
-	inWg.Add(1)
-	go func (wg *sync.WaitGroup) {
-		defer wg.Done()
-		counter := 0
-		for c := range countChan {
-			counter += c
-		}
-		fmt.Println("Total: ", counter)
-	}(&inWg)
-
-	processWg.Wait()
-	close(countChan)
-
-	inWg.Wait()
+	go processInput(urlChan, searchReg)
+	go processRead(urlChan, countChan, buf)
+	processStats(countChan)
 }
 
-func processInput(in chan string, re *regexp.Regexp, wg *sync.WaitGroup) {
-	defer func() {
-		wg.Done()
-		close(in)
-	}()
+func processInput(out chan <- string, re *regexp.Regexp) {
+	defer close(out)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
@@ -64,22 +43,40 @@ func processInput(in chan string, re *regexp.Regexp, wg *sync.WaitGroup) {
 				log.Println(err)
 				continue
 			}
-			in <- string(str)
+			out <- str
 		}
 	}
 }
 
-func processRead(in chan string, out chan int, wg *sync.WaitGroup) {
-	defer wg.Done()
+func processRead(in <-chan string, out chan<- int, buf chan struct{}) {
+	var wg sync.WaitGroup
 
 	for str := range in {
-		count, err := sendRequest(str)
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-		out <- count
+		wg.Add(1)
+		buf <- struct{}{}
+
+		go func(str string) {
+			defer wg.Done()
+			count, err := sendRequest(str)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+			out <- count
+			<-buf
+		}(str)
 	}
+
+	wg.Wait()
+	close(out)
+}
+
+func processStats(in <-chan int) {
+	counter := 0
+	for c := range in {
+		counter += c
+	}
+	fmt.Println("Total:", counter)
 }
 
 func sendRequest(url string) (int, error) {
