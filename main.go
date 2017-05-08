@@ -81,10 +81,13 @@ func processStats(in <-chan int) {
 
 func sendRequest(url string) (int, error) {
 	resp, err := http.Get(url)
+	// https://habrahabr.ru/company/mailru/blog/314804/#36
+	if resp != nil {
+		defer resp.Body.Close()
+	}
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
